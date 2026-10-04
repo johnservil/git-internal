@@ -54,7 +54,7 @@ uuid = { version = "1.24.0", features = ["serde", "v4", "v7"] }
 tokio = { version = "1.53.1", features = ["fs", "io-util"] }
 rkyv = { version = "0.8.18", features = ["bytecheck"] }
 axum = { version = "0.8.9", features = ["macros", "json"] }
-blake3 = "1.8"
+blake3 = { package = "blake3-servil", git = "https://github.com/johnservil/BLAKE3", rev = "7dc9afe48eade635f1c3261b0deb29e1276b0625" }
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["full"] }
