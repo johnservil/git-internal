@@ -430,11 +430,7 @@ impl ObjectHash {
                 actual: 0,
                 payload_len: data.len(),
             })?;
-        let mut hasher = HashAlgorithm::new_for_kind(kind);
-        hasher.update(type_bytes);
-        hasher.update(b" ");
-        hasher.update(data.len().to_string().as_bytes());
-        hasher.update(b"\x00");
+        let mut hasher = HashAlgorithm::for_object(kind, type_bytes, data.len());
         hasher.update(data);
         Ok(hasher.finalize_object_hash())
     }
@@ -448,6 +444,9 @@ impl ObjectHash {
     /// [`ObjectHash::from_type_and_data_for_kind`], which is fallible and
     /// streams the header instead of copying the payload.
     pub fn from_type_and_data(object_type: ObjectType, data: &[u8]) -> ObjectHash {
+        if get_hash_kind() == HashKind::Blake3 {
+            return Self::from_type_and_data_for_kind(HashKind::Blake3, object_type, data).expect("a type with a loose-object header");
+        }
         let mut d: Vec<u8> = Vec::new();
         d.extend(object_type.to_data().unwrap());
         d.push(b' ');

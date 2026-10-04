@@ -33,11 +33,8 @@ where
     R: BufRead,
 {
     /// Seed `hash` with the loose-object header `<type> <size>\0` and build the reader.
-    fn with_header(inner: R, mut hash: HashAlgorithm, type_bytes: &[u8], size: usize) -> Self {
-        hash.update(type_bytes);
-        hash.update(b" ");
-        hash.update(size.to_string().as_bytes());
-        hash.update(b"\0");
+    fn with_header(inner: R, hash: HashAlgorithm, type_bytes: &[u8], size: usize) -> Self {
+        let hash = HashAlgorithm::for_object(hash.kind(), type_bytes, size);
         ReadBoxed {
             inner,
             hash,

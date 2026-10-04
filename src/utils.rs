@@ -111,6 +111,39 @@ impl HashAlgorithm {
     pub fn new() -> Self {
         Self::new_for_kind(get_hash_kind())
     }
+    /// A hasher ready for the content of an object of type `type_bytes` and
+    /// `size` bytes: for SHA-1 and SHA-256, seeded with Git's header
+    /// `<type> <size>\0`; for BLAKE3, in key-derivation mode with a context
+    /// per object type, and nothing fed. BLAKE3 binds the length itself, and
+    /// the context separates the types, so an object's ID is the hash of its
+    /// content in place (benchmark variant: bench-hashes apps/libra-bench).
+    pub fn for_object(kind: HashKind, type_bytes: &[u8], size: usize) -> Self {
+        match kind {
+            HashKind::Blake3 => {
+                use blake3::hazmat::HasherExt;
+                static KEYS: std::sync::OnceLock<Vec<(Vec<u8>, [u8; 32])>> = std::sync::OnceLock::new();
+                let keys = KEYS.get_or_init(|| {
+                    ["blob", "tree", "commit", "tag", "ai"]
+                        .iter()
+                        .map(|t| (t.as_bytes().to_vec(), blake3::hazmat::hash_derive_key_context(&format!("libra-tools git-internal 2026-09-04 {t}"))))
+                        .collect()
+                });
+                let key = match keys.iter().find(|(t, _)| t == type_bytes) {
+                    Some((_, key)) => *key,
+                    None => blake3::hazmat::hash_derive_key_context(&format!("libra-tools git-internal 2026-09-04 {}", String::from_utf8_lossy(type_bytes))),
+                };
+                HashAlgorithm::Blake3(Box::new(blake3::Hasher::new_from_context_key(&key)))
+            }
+            _ => {
+                let mut hasher = Self::new_for_kind(kind);
+                hasher.update(type_bytes);
+                hasher.update(b" ");
+                hasher.update(size.to_string().as_bytes());
+                hasher.update(b"\0");
+                hasher
+            }
+        }
+    }
     /// The [`HashKind`] this hasher produces.
     pub fn kind(&self) -> HashKind {
         match self {

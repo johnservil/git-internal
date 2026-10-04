@@ -278,14 +278,8 @@ fn decimal_usize_bytes(mut value: usize, buf: &mut [u8; 20]) -> &[u8] {
 
 /// Stream `"<type> <size>\0<content>"` through `hasher` without allocating and
 /// finalize it into an [`ObjectHash`] of the hasher's own kind.
-fn hash_loose_object(mut hasher: HashAlgorithm, type_bytes: &[u8], data: &[u8]) -> ObjectHash {
-    let mut len_buf = [0; 20];
-    let len_bytes = decimal_usize_bytes(data.len(), &mut len_buf);
-    // Header: "<type> <size>\0"
-    hasher.update(type_bytes);
-    hasher.update(b" ");
-    hasher.update(len_bytes);
-    hasher.update(b"\0");
+fn hash_loose_object(hasher: HashAlgorithm, type_bytes: &[u8], data: &[u8]) -> ObjectHash {
+    let mut hasher = HashAlgorithm::for_object(hasher.kind(), type_bytes, data.len());
     // Decompressed data(raw content)
     hasher.update(data);
     hasher.finalize_object_hash()

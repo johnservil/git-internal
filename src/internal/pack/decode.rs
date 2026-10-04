@@ -659,11 +659,7 @@ impl Pack {
                 "{obj_type} has no loose-object header and cannot be hashed as a base object"
             ))
         })?;
-        let mut hasher = HashAlgorithm::new_for_kind(kind);
-        hasher.update(type_bytes);
-        hasher.update(b" ");
-        hasher.update(expected_size.to_string().as_bytes());
-        hasher.update(b"\0");
+        let mut hasher = HashAlgorithm::for_object(kind, type_bytes, expected_size);
 
         let mut counting_reader = CountingReader::new(pack);
         let mut deflate = ZlibDecoder::new(&mut counting_reader);
