@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.3] - 2026-10-04
+
+### Fixed
+
+- `Index::refresh_with_hash_kind` now recomputes the blob's object ID — the
+  digest of `"<type> <size>\0"` + the file contents, matching
+  `ObjectHash::from_type_and_data_for_kind` — instead of a digest of the raw
+  file bytes (issue #183). Previously an unchanged tracked file was always
+  reported as changed and its entry hash was overwritten with a value that no
+  object in the database has. The header is streamed into the hasher before the
+  file, so the file is still never buffered in memory.
+
 ## [0.10.2] - 2026-09-20
 
 ### Fixed

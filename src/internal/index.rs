@@ -20,7 +20,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crate::{
     errors::GitError,
     hash::{HashKind, ObjectHash, get_hash_kind},
-    internal::pack::wrapper::Wrapper,
+    internal::{object::types::ObjectType, pack::wrapper::Wrapper},
     utils::{self, HashAlgorithm},
 };
 
@@ -531,6 +531,11 @@ impl Index {
 
     /// Refresh one entry's stat data and content hash for an explicit repository `kind`.
     ///
+    /// The recomputed ID is the blob's object ID — the digest of `"<type> <size>\0"` + the
+    /// file contents, exactly what [`ObjectHash::from_type_and_data_for_kind`] produces for
+    /// [`ObjectType::Blob`] — not a digest of the raw file bytes. The header is streamed
+    /// into the hasher before the file, so the file is never buffered in memory.
+    ///
     /// The existing entry must already belong to `kind`: refreshing an entry of another kind
     /// fails closed instead of silently replacing its ID with a digest of a different
     /// algorithm.
@@ -553,9 +558,19 @@ impl Index {
             let new_mtime = Time::from_system_time(index_mtime(&meta));
             let new_size = meta.len() as u32;
 
-            // re-calculate the content hash with the repository kind
-            let mut file = File::open(&abs_path)?;
+            // re-calculate the blob ID with the repository kind: the ID covers
+            // `"<type> <size>\0" + content` (see `ObjectHash::from_type_and_data_for_kind`),
+            // so the header must be hashed before the file contents. Streaming the header
+            // first keeps the file itself out of memory.
+            let type_label = ObjectType::Blob
+                .to_bytes()
+                .ok_or_else(|| GitError::InvalidObjectType("Blob".to_string()))?;
             let mut hasher = HashAlgorithm::new_for_kind(kind);
+            hasher.update(type_label);
+            hasher.update(b" ");
+            hasher.update(meta.len().to_string().as_bytes());
+            hasher.update(b"\x00");
+            let mut file = File::open(&abs_path)?;
             io::copy(&mut file, &mut hasher)?;
             let new_hash = hasher.finalize_object_hash();
 
@@ -717,7 +732,10 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use crate::hash::{HashKind, set_hash_kind_for_test};
+    use crate::{
+        hash::{HashKind, set_hash_kind_for_test},
+        internal::object::blob::Blob,
+    };
 
     /// Test Time conversion
     #[test]
@@ -1023,8 +1041,11 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path().join("index-blake3");
 
-        let a = ObjectHash::new_for_kind(HashKind::Blake3, b"a");
-        let c = ObjectHash::new_for_kind(HashKind::Blake3, b"c");
+        // Entry IDs are real blob IDs, as a status/commit flow would store them.
+        let a = ObjectHash::from_type_and_data_for_kind(HashKind::Blake3, ObjectType::Blob, b"a")
+            .unwrap();
+        let c = ObjectHash::from_type_and_data_for_kind(HashKind::Blake3, ObjectType::Blob, b"c")
+            .unwrap();
         let mut index = Index::new();
         index.add(IndexEntry::new_from_blob("a.txt".to_string(), a, 1));
         index.add(IndexEntry::new_from_blob("b/c.txt".to_string(), c, 3));
@@ -1090,7 +1111,8 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), before);
 
         // Refreshing a BLAKE3 entry with another kind is refused and leaves it untouched;
-        // the same kind recomputes a BLAKE3 content hash.
+        // the same kind recomputes the BLAKE3 blob ID of the file, which the entry
+        // already carries, so the ID itself is unchanged.
         let work = temp_dir.path().join("work");
         std::fs::create_dir_all(&work).unwrap();
         std::fs::write(work.join("a.txt"), b"a").unwrap();
@@ -1106,5 +1128,43 @@ mod tests {
         let got = refreshed.get("a.txt", 0).unwrap().hash;
         assert_eq!(got.kind(), HashKind::Blake3);
         assert_eq!(got, a);
+    }
+
+    /// Regression test for <https://github.com/libra-tools/git-internal/issues/183>:
+    /// `refresh_with_hash_kind` must recompute the blob ID — the digest of
+    /// `"blob <size>\0" + content` — not the digest of the raw file bytes. An unchanged
+    /// file whose entry carries the blob's real ID must be reported as unchanged and keep
+    /// that ID; a modified file must flip to the new blob's ID.
+    #[test]
+    fn refresh_recomputes_the_blob_id_not_the_raw_file_hash() {
+        let _guard = set_hash_kind_for_test(HashKind::Sha1);
+        for kind in [HashKind::Sha1, HashKind::Sha256, HashKind::Blake3] {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let work = temp_dir.path();
+            let content = b"hello, git-internal\n".to_vec();
+            std::fs::write(work.join("a.txt"), &content).unwrap();
+
+            let blob = Blob::from_content_bytes_with_kind(kind, content).unwrap();
+            let mut index = Index::new();
+            index.add(IndexEntry::new_from_file(Path::new("a.txt"), blob.id, work).unwrap());
+
+            // The unchanged file must not flip to "changed", and the entry keeps the blob ID.
+            let changed = index.refresh_with_hash_kind(kind, "a.txt", work).unwrap();
+            assert!(!changed, "{kind:?}: unchanged file reported as changed");
+            let got = index.get("a.txt", 0).unwrap().hash;
+            assert_eq!(got, blob.id, "{kind:?}: entry hash must stay the blob ID");
+
+            // A modified file is detected, and its entry hash becomes the new blob's ID.
+            let new_content = b"changed\n".to_vec();
+            std::fs::write(work.join("a.txt"), &new_content).unwrap();
+            let changed = index.refresh_with_hash_kind(kind, "a.txt", work).unwrap();
+            assert!(changed, "{kind:?}: modified file not reported as changed");
+            let new_blob = Blob::from_content_bytes_with_kind(kind, new_content).unwrap();
+            let got = index.get("a.txt", 0).unwrap().hash;
+            assert_eq!(
+                got, new_blob.id,
+                "{kind:?}: entry hash must be the new blob ID"
+            );
+        }
     }
 }
